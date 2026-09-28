@@ -69,6 +69,24 @@
     font-size:14px;opacity:0;pointer-events:none;transition:opacity .22s;max-width:88vw;text-align:center}
   .toast.on{opacity:.95}
   .loading{color:var(--ink3);font-size:13.5px;padding:8px 0}
+  /* 账号卡：每账号一块，左名右数、下方积分条。手机上单列，宽屏两列。 */
+  .accts{display:grid;grid-template-columns:1fr;gap:9px}
+  @media (min-width:560px){ .accts{grid-template-columns:1fr 1fr} }
+  .acct{border:1px solid var(--line);border-radius:11px;padding:11px 12px;background:var(--bg)}
+  .acct.locked{border-color:var(--warn);background:var(--warnbg)}
+  .acct.off{opacity:.6}
+  .acct .top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .acct .nm{font-weight:650;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .acct .pr{font-size:11px;color:var(--ink3);flex:none}
+  .acct .cr{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:6px;
+    display:flex;align-items:baseline;gap:4px}
+  .acct .cr .of{font-size:12px;font-weight:400;color:var(--ink3)}
+  .cbar{height:4px;background:var(--line);border-radius:3px;margin-top:6px;overflow:hidden}
+  .cbar i{display:block;height:100%;background:var(--acc);border-radius:3px;transition:width .3s}
+  .cbar.low i{background:var(--warn)}
+  .cbar.crit i{background:var(--bad)}
+  .acct .lock{margin-top:7px;font-size:11.5px;color:var(--warn)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink3);margin-top:10px}
   .hidden{display:none}
   code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
     background:var(--line2);padding:1.5px 5px;border-radius:5px}
@@ -178,6 +196,7 @@ async function loadStatus() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = JSON.parse(await r.text());
 
+    // 概览行
     let html = '';
     html += `<div class="kv"><span class="k">更新时间</span><span class="v">${fmtTime(d.updated)}</span></div>`;
     html += `<div class="kv"><span class="k">触发方式</span><span class="v">${
@@ -185,15 +204,52 @@ async function loadStatus() {
     html += `<div class="kv"><span class="k">账号数</span><span class="v">${d.account_count ?? '—'}</span></div>`;
     if (d.queue) {
       const q = d.queue;
-      html += `<div class="kv"><span class="k">任务队列</span><span class="v">共 ${q.total} · 成功 ${q.done} · 失败 ${q.failed} · 跳过 ${q.skipped}</span></div>`;
+      const bad = q.failed > 0;
+      html += `<div class="kv"><span class="k">任务队列</span><span class="v">共 ${q.total} · 成功 ${q.done} · ${
+        bad ? '<span style="color:var(--bad)">失败 ' + q.failed + '</span>' : '失败 0'} · 跳过 ${q.skipped}</span></div>`;
     }
     box.innerHTML = html;
+
+    // 阶段清单：逐条列出，一眼看出哪步做了、哪步跳了
     if (Array.isArray(d.steps) && d.steps.length) {
       const ul = document.createElement('ul');
       ul.className = 'steps';
-      ul.innerHTML = d.steps.map(s =>
-        `<li><span class="n">${esc(s.name)}</span><span class="r">${esc(s.result)}</span></li>`).join('');
+      ul.innerHTML = d.steps.map(s => {
+        const skipped = s.result.startsWith('跳过') || s.result.startsWith('未执行');
+        return `<li><span class="n">${esc(s.name)}</span>
+          <span class="r" style="${skipped ? 'color:var(--warn)' : 'color:var(--ok)'}">${esc(s.result)}</span></li>`;
+      }).join('');
       box.appendChild(ul);
+    }
+
+    // 账号卡：每个号的积分、优先级、限流锁定一目了然
+    if (Array.isArray(d.accounts) && d.accounts.length) {
+      const h = document.createElement('div');
+      h.innerHTML = '<h2 style="margin:16px 0 9px">账号状态</h2><div class="accts">' +
+        d.accounts.map(a => {
+          const total = a.credits_total || 0;
+          const pct = total > 0 ? Math.min(100, Math.round((a.credits || 0) / total * 100)) : 0;
+          const lvl = pct >= 30 ? '' : pct >= 10 ? 'low' : 'crit';
+          const locked = (a.locked_models || []).length > 0;
+          const lockTxt = (a.locked_models || []).map(m => {
+            const t = m.until ? new Date(m.until) : null;
+            const p = n => String(n).padStart(2, '0');
+            const when = t ? `${p(t.getMonth()+1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}` : '';
+            return `🔒 ${esc(String(m.model).replace(/^(cn|global):/, ''))} ${when}`;
+          }).join('<br>');
+          return `<div class="acct ${locked ? 'locked' : ''} ${a.disabled ? 'off' : ''}">
+            <div class="top">
+              <span class="nm">${esc(a.nickname || a.uid.slice(0, 8))}</span>
+              <span class="pr">优先 ${a.priority ?? 0}</span>
+            </div>
+            <div class="cr">${a.credits ?? '—'}${total > 0 ? `<span class="of">/ ${total}</span>` : ''}</div>
+            ${total > 0 ? `<div class="cbar ${lvl}"><i style="width:${pct}%"></i></div>` : ''}
+            ${locked ? `<div class="lock">${lockTxt}</div>` : ''}
+            ${a.disabled ? '<div class="lock">已禁用</div>' : ''}
+          </div>`;
+        }).join('') + '</div>' +
+        '<div class="legend"><span>🔒 = 该模型的用量配额已耗尽，到点自动解锁</span><span>条 = 积分剩余 / 总额</span></div>';
+      box.appendChild(h);
     }
   } catch (e) {
     box.innerHTML = '<div class="loading">读取失败：' + esc(e.message) + '</div>';
